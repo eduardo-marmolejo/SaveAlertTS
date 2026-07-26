@@ -1,0 +1,9 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="SaveAlertTS/SaveAlertTS.csproj" Id="466dd6cc-c46e-4359-a38d-135219a2e454">
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+</Solution>

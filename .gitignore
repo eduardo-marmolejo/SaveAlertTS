@@ -1,0 +1,22 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+
+## Output
+Output/
+
+## Installer script
+Installer.iss
+
+## Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docuser
+
+## OS
+Thumbs.db
+Desktop.ini
