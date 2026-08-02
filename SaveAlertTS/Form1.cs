@@ -12,18 +12,39 @@ namespace SaveAlertTS
 {
     public partial class frmSaveAlert : Form
     {
+        public uint TargetPid { get; private set; }
+        public string TargetModelPath { get; private set; }
+
         public frmSaveAlert()
         {
             InitializeComponent();
         }
 
-        // Este metodo lo genera Visual Studio automaticamente al hacer doble clic
-        // en tu boton dentro del editor visual. Solo agrega la linea Close().
-        private void btnOK_Click(object sender, EventArgs e)
+        public void SetTarget(uint pid, string modelPath)
         {
-            // IMPORTANTE: solo cierra ESTA ventana, no el proceso completo.
-            // El watcher (TeklaWatcher) sigue corriendo en la bandeja del sistema.
-            Close();
+            TargetPid = pid;
+            TargetModelPath = modelPath;
+        }
+
+        private async void btnOK_Click(object sender, EventArgs e)
+        {
+            btnOK.Enabled = false;
+            btnOK.Text = "Saving...";
+            lblMessage2.Text = "Saving the model...";
+
+            bool saved = await Task.Run(() => TeklaSaveService.SaveCurrentModel(TargetPid, TargetModelPath));
+
+            if (saved)
+            {
+                btnOK.Enabled = true;
+                Close();
+            }
+            else
+            {
+                lblMessage.Text = "Error saving the model.";
+                btnOK.Enabled = true;
+                btnOK.Text = "Retry";
+            }
         }
     }
 }

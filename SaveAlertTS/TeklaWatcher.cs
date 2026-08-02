@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -25,9 +26,9 @@ namespace SaveAlertTS
         private frmSaveAlert _activeAlert;
         private int _tickCount;
         private string _teklaBinPath;
-        private readonly HashSet<string> _alertedModels = new HashSet<string>();
-        private readonly HashSet<string> _closedModels = new HashSet<string>();
-        private readonly Dictionary<string, string> _lastTitles = new Dictionary<string, string>();
+        private readonly HashSet<uint> _alertedPids = new HashSet<uint>();
+        private readonly Dictionary<uint, string> _lastAlertedModelByPid = new Dictionary<uint, string>();
+        private volatile bool _forceDetect;
         private volatile bool _connecting;
         private volatile bool _modelConnectionAttempted;
         private HashSet<uint> _teklaPids = new HashSet<uint>();
@@ -37,6 +38,7 @@ namespace SaveAlertTS
         public TeklaWatcher()
         {
             LogDiagnostic("=== TeklaWatcher INICIADO ===");
+            TeklaSaveService.CleanupStale();
 
             AppDomain.CurrentDomain.AssemblyResolve += HandleAssemblyResolve;
 
@@ -184,12 +186,13 @@ namespace SaveAlertTS
                     _eventsRegistered = false;
                     _connecting = false;
                     _modelConnectionAttempted = false;
-                    _alertedModels.Clear();
-                    _closedModels.Clear();
-                    _lastTitles.Clear();
+                    _alertedPids.Clear();
+                    _lastAlertedModelByPid.Clear();
                     UninstallWinEventHook();
                     return;
                 }
+
+                ProcessBridgeMarkers();
 
                 if (!_eventsRegistered && !_modelConnectionAttempted && _tickCount % 60 == 0)
                 {
@@ -197,21 +200,16 @@ namespace SaveAlertTS
                     RegisterEvents();
                 }
 
+                if (_forceDetect)
+                {
+                    _forceDetect = false;
+                    DetectModelByWindowTitle();
+                }
+
                 if (_loadingDetected)
                 {
                     _loadingDetected = false;
                     _titleChanged = false;
-                    IntPtr hwnd = _pendingWinEventHwnd;
-                    if (hwnd != IntPtr.Zero && IsHwndOwnedByTekla(hwnd))
-                    {
-                        var sb = new StringBuilder(512);
-                        GetWindowText(hwnd, sb, sb.Capacity);
-                        string title = sb.ToString();
-                        string model = ExtractModelPath(title);
-                        LogDiagnostic("Loading confirmado para: [" + model + "]");
-                        if (!string.IsNullOrEmpty(model))
-                            _alertedModels.Remove(model);
-                    }
                     DetectModelByWindowTitle();
                     return;
                 }
@@ -232,7 +230,12 @@ namespace SaveAlertTS
                 return;
 
             if (_modelConnectionAttempted)
+            {
+                RefreshTeklaPids();
+                ProcessBridgeMarkers();
+                DetectModelByWindowTitle();
                 return;
+            }
 
             RefreshTeklaPids();
             if (_teklaPids.Count == 0)
@@ -253,8 +256,8 @@ namespace SaveAlertTS
                     {
                         RegisterEvents();
                         _connected = true;
-                        _alertedModels.Clear();
-                        _closedModels.Clear();
+                        _alertedPids.Clear();
+                        _lastAlertedModelByPid.Clear();
                         _loadingDetected = false;
                         InstallWinEventHook();
                         LogDiagnostic("Conexion establecida. Monitoreando ventana...");
@@ -288,13 +291,6 @@ namespace SaveAlertTS
             _teklaPids = pids;
         }
 
-        private bool IsHwndOwnedByTekla(IntPtr hwnd)
-        {
-            uint pid;
-            GetWindowThreadProcessId(hwnd, out pid);
-            return _teklaPids.Contains(pid);
-        }
-
         private void RegisterEvents()
         {
             try
@@ -324,8 +320,7 @@ namespace SaveAlertTS
             {
                 if (_teklaPids.Count == 0) return;
 
-                var currentModels = new HashSet<string>();
-                var currentTitles = new Dictionary<string, string>();
+                var current = new Dictionary<uint, string>();
 
                 foreach (uint pid in _teklaPids)
                 {
@@ -334,66 +329,51 @@ namespace SaveAlertTS
                         string title = GetTeklaWindowTitle(pid);
                         if (string.IsNullOrEmpty(title)) continue;
                         if (title.IndexOf("Tekla", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        if (title.IndexOf("(Loading)", StringComparison.OrdinalIgnoreCase) >= 0) continue;
 
                         string model = ExtractModelPath(title);
-                        if (!string.IsNullOrEmpty(model))
-                        {
-                            currentModels.Add(model);
-                            currentTitles[model] = title;
-                        }
+                        if (string.IsNullOrEmpty(model)) continue;
+
+                        current[pid] = model;
                     }
                     catch (Exception) { }
                 }
 
-                foreach (string m in _alertedModels)
+                var gone = new List<uint>();
+                foreach (uint pid in _alertedPids)
+                    if (!current.ContainsKey(pid)) gone.Add(pid);
+                foreach (uint pid in gone)
                 {
-                    if (!currentModels.Contains(m))
-                    {
-                        _closedModels.Add(m);
-                        LogDiagnostic("Modelo CERRADO: " + m);
-                    }
+                    LogDiagnostic("Sesion sin modelo o cerrada pid=" + pid);
+                    _alertedPids.Remove(pid);
+                    _lastAlertedModelByPid.Remove(pid);
                 }
 
-                bool foundReload = false;
-                var toRemoveFromClosed = new List<string>();
-                foreach (string m in _closedModels)
-                {
-                    if (currentModels.Contains(m))
-                    {
-                        LogDiagnostic("Modelo REABIERTO: " + m);
-                        _alertedModels.Remove(m);
-                        toRemoveFromClosed.Add(m);
-                        foundReload = true;
-                    }
-                }
-                foreach (string m in toRemoveFromClosed)
-                    _closedModels.Remove(m);
+                bool anyNew = false;
+                uint targetPid = 0;
+                string targetModel = null;
 
-                bool foundNew = false;
-                foreach (string m in currentModels)
+                foreach (var kv in current)
                 {
-                    if (!_alertedModels.Contains(m))
-                    {
-                        LogDiagnostic("Modelo NUEVO: " + m);
-                        foundNew = true;
-                    }
+                    string lastModel;
+                    bool alreadyAlerted = _alertedPids.Contains(kv.Key)
+                        && _lastAlertedModelByPid.TryGetValue(kv.Key, out lastModel)
+                        && lastModel == kv.Value;
+
+                    if (alreadyAlerted)
+                        continue;
+
+                    _alertedPids.Add(kv.Key);
+                    _lastAlertedModelByPid[kv.Key] = kv.Value;
+                    targetPid = kv.Key;
+                    targetModel = kv.Value;
+                    anyNew = true;
                 }
 
-                if (foundNew || foundReload)
+                if (anyNew)
                 {
-                    LogDiagnostic("Sesiones: [" + string.Join("|", currentModels) + "]");
-                    foreach (string m in currentModels)
-                        LogDiagnostic("Titulo RAW: [" + currentTitles[m] + "]");
-
-                    foreach (string m in currentModels)
-                        _alertedModels.Add(m);
-
-                    _lastTitles.Clear();
-                    foreach (var kv in currentTitles)
-                        _lastTitles[kv.Key] = kv.Value;
-
-                    LogDiagnostic("Mostrando alerta...");
-                    ShowReminder();
+                    LogDiagnostic("Sesiones actuales: [" + string.Join(" | ", current.Select(kv => kv.Key + "=" + kv.Value)) + "]");
+                    ShowReminder(targetPid, targetModel);
                 }
             }
             catch (Exception ex)
@@ -426,6 +406,103 @@ namespace SaveAlertTS
             return afterDash;
         }
 
+        private void ProcessBridgeMarkers()
+        {
+            try
+            {
+                string bridgeDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "SaveAlertTS", "bridge");
+
+                if (!Directory.Exists(bridgeDir))
+                    return;
+
+                string[] files;
+                try
+                {
+                    files = Directory.GetFiles(bridgeDir, "model_*.txt");
+                }
+                catch
+                {
+                    return;
+                }
+
+                foreach (string file in files)
+                {
+                    try
+                    {
+                        string fileName = Path.GetFileName(file);
+                        if (!fileName.StartsWith("model_", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        string pidText = fileName.Substring("model_".Length);
+                        if (pidText.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                            pidText = pidText.Substring(0, pidText.Length - 4);
+
+                        uint pid;
+                        if (!uint.TryParse(pidText, out pid))
+                        {
+                            TryDeleteBridgeFile(file);
+                            continue;
+                        }
+
+                        if (!_teklaPids.Contains(pid))
+                        {
+                            LogDiagnostic("Marcador para sesion inexistente, borrado pid=" + pid);
+                            TryDeleteBridgeFile(file);
+                            continue;
+                        }
+
+                        string[] lines = File.ReadAllLines(file);
+                        string model = GetBridgeValue(lines, "MODEL");
+                        if (string.IsNullOrEmpty(model))
+                        {
+                            LogDiagnostic("Marcador sin MODEL, re-intentando pid=" + pid);
+                            continue;
+                        }
+
+                        TryDeleteBridgeFile(file);
+
+                        LogDiagnostic("Marcador de modelo pid=" + pid + " model=[" + model + "]");
+                        _alertedPids.Add(pid);
+                        _lastAlertedModelByPid[pid] = model;
+                        ShowReminder(pid, model);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogDiagnostic("ProcessBridgeMarkers error: " + ex.Message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostic("ProcessBridgeMarkers: " + ex.Message);
+            }
+        }
+
+        private static string GetBridgeValue(string[] lines, string key)
+        {
+            string prefix = key + "=";
+            foreach (string line in lines)
+            {
+                if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return line.Substring(prefix.Length).Trim();
+            }
+            return null;
+        }
+
+        private static void TryDeleteBridgeFile(string file)
+        {
+            try
+            {
+                if (File.Exists(file))
+                    File.Delete(file);
+            }
+            catch
+            {
+            }
+        }
+
         private void OnModelLoad()
         {
             LogDiagnostic(">>> OnModelLoad disparado! <<<");
@@ -434,11 +511,11 @@ namespace SaveAlertTS
             {
                 if (_uiSync.InvokeRequired)
                 {
-                    _uiSync.Invoke(new Action(ShowReminder));
+                    _uiSync.Invoke(new Action(() => { _forceDetect = true; }));
                 }
                 else
                 {
-                    ShowReminder();
+                    _forceDetect = true;
                 }
             }
             catch (Exception ex)
@@ -458,14 +535,16 @@ namespace SaveAlertTS
                     _uiSync.Invoke(new Action(() =>
                     {
                     _connected = false;
-                    _alertedModels.Clear();
+                    _alertedPids.Clear();
+                    _lastAlertedModelByPid.Clear();
 
                     }));
                 }
                 else
                 {
                     _connected = false;
-                    _alertedModels.Clear();
+                    _alertedPids.Clear();
+                    _lastAlertedModelByPid.Clear();
 
                 }
             }
@@ -475,31 +554,31 @@ namespace SaveAlertTS
             }
         }
 
-        private void ShowReminder()
+        private void ShowReminder(uint pid, string model)
         {
-            LogDiagnostic("ShowReminder() llamado.");
+            LogDiagnostic("ShowReminder() pid=" + pid + " model=[" + model + "]");
 
             try
             {
                 if (_activeAlert != null && !_activeAlert.IsDisposed)
                 {
+                    _activeAlert.SetTarget(pid, model);
                     _activeAlert.Activate();
                     _activeAlert.BringToFront();
-                    LogDiagnostic("Alerta ya visible. Activada.");
+                    LogDiagnostic("Alerta ya visible. Retargeted a pid=" + pid);
                     return;
                 }
 
-                _activeAlert = new frmSaveAlert
-                {
-                    StartPosition = FormStartPosition.CenterScreen,
-                    TopMost = true,
-                    ShowInTaskbar = true
-                };
+                _activeAlert = new frmSaveAlert();
+                _activeAlert.SetTarget(pid, model);
+                _activeAlert.StartPosition = FormStartPosition.CenterScreen;
+                _activeAlert.TopMost = true;
+                _activeAlert.ShowInTaskbar = true;
                 _activeAlert.FormClosed += (s, e) => _activeAlert = null;
                 _activeAlert.Show();
                 _activeAlert.BringToFront();
 
-                LogDiagnostic("Alerta mostrada OK.");
+                LogDiagnostic("Alerta mostrada OK pid=" + pid);
             }
             catch (Exception ex)
             {
