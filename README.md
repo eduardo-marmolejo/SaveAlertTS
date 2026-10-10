@@ -24,9 +24,10 @@ SaveAlertTS es una aplicación de bandeja del sistema que monitorea las sesiones
 ## Instalación
 
 1. Descarga el instalador desde la sección [Releases](../../releases) de este repositorio.
-2. Ejecuta `SaveAlertTS_Setup.exe`.
-3. Sigue las instrucciones del instalador.
-4. La aplicación se iniciará automáticamente con Windows.
+2. Si tienes una versión antigua, primero desinstala la versión antigua.
+3. Ejecuta `SaveAlertTS_Setup.exe`.
+4. Sigue las instrucciones del instalador.
+5. La aplicación se iniciará automáticamente con Windows.
 
 ## Compilación
 

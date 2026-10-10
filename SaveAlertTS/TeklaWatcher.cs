@@ -28,6 +28,8 @@ namespace SaveAlertTS
         private string _teklaBinPath;
         private readonly HashSet<uint> _alertedPids = new HashSet<uint>();
         private readonly Dictionary<uint, string> _lastAlertedModelByPid = new Dictionary<uint, string>();
+        private readonly Dictionary<uint, string> _lastMarkerLoadIdByPid = new Dictionary<uint, string>();
+        private readonly Dictionary<uint, DateTime> _lastAlertTimeByPid = new Dictionary<uint, DateTime>();
         private volatile bool _forceDetect;
         private volatile bool _connecting;
         private volatile bool _modelConnectionAttempted;
@@ -43,12 +45,12 @@ namespace SaveAlertTS
             AppDomain.CurrentDomain.AssemblyResolve += HandleAssemblyResolve;
 
             var menu = new ContextMenuStrip();
-            menu.Items.Add("Salir", null, (s, e) => ExitApp());
+            menu.Items.Add(Localization.TrayExit, null, (s, e) => ExitApp());
 
             _trayIcon = new NotifyIcon
             {
                 Icon = System.Drawing.SystemIcons.Information,
-                Text = "Tekla Save Watcher",
+                Text = Localization.TrayTooltip,
                 Visible = true,
                 ContextMenuStrip = menu
             };
@@ -188,6 +190,8 @@ namespace SaveAlertTS
                     _modelConnectionAttempted = false;
                     _alertedPids.Clear();
                     _lastAlertedModelByPid.Clear();
+                    _lastMarkerLoadIdByPid.Clear();
+                    _lastAlertTimeByPid.Clear();
                     UninstallWinEventHook();
                     return;
                 }
@@ -258,6 +262,8 @@ namespace SaveAlertTS
                         _connected = true;
                         _alertedPids.Clear();
                         _lastAlertedModelByPid.Clear();
+                        _lastMarkerLoadIdByPid.Clear();
+                        _lastAlertTimeByPid.Clear();
                         _loadingDetected = false;
                         InstallWinEventHook();
                         LogDiagnostic("Conexion establecida. Monitoreando ventana...");
@@ -347,6 +353,8 @@ namespace SaveAlertTS
                     LogDiagnostic("Sesion sin modelo o cerrada pid=" + pid);
                     _alertedPids.Remove(pid);
                     _lastAlertedModelByPid.Remove(pid);
+                    _lastMarkerLoadIdByPid.Remove(pid);
+                    _lastAlertTimeByPid.Remove(pid);
                 }
 
                 bool anyNew = false;
@@ -365,6 +373,7 @@ namespace SaveAlertTS
 
                     _alertedPids.Add(kv.Key);
                     _lastAlertedModelByPid[kv.Key] = kv.Value;
+                    _lastAlertTimeByPid[kv.Key] = DateTime.Now;
                     targetPid = kv.Key;
                     targetModel = kv.Value;
                     anyNew = true;
@@ -397,9 +406,17 @@ namespace SaveAlertTS
 
             string afterDash = title.Substring(dashIdx + 3).Trim();
 
-            int viewIdx = afterDash.IndexOf(" - View", StringComparison.OrdinalIgnoreCase);
-            if (viewIdx > 0)
-                afterDash = afterDash.Substring(0, viewIdx);
+            int suffixIdx = afterDash.IndexOf("  - ", StringComparison.Ordinal);
+            if (suffixIdx > 0)
+            {
+                afterDash = afterDash.Substring(0, suffixIdx);
+            }
+            else
+            {
+                int viewIdx = afterDash.IndexOf(" - View", StringComparison.OrdinalIgnoreCase);
+                if (viewIdx > 0)
+                    afterDash = afterDash.Substring(0, viewIdx);
+            }
 
             afterDash = afterDash.Replace("(Loading)", "").Trim().TrimEnd(' ');
 
@@ -461,11 +478,42 @@ namespace SaveAlertTS
                             continue;
                         }
 
+                        string loadId = GetBridgeValue(lines, "LOADEDAT");
+                        if (string.IsNullOrEmpty(loadId))
+                            loadId = model;
+
                         TryDeleteBridgeFile(file);
 
-                        LogDiagnostic("Marcador de modelo pid=" + pid + " model=[" + model + "]");
+                        LogDiagnostic("Marcador de modelo pid=" + pid + " model=[" + model + "] loadId=[" + loadId + "]");
+
+                        string lastLoadId;
+                        if (_lastMarkerLoadIdByPid.TryGetValue(pid, out lastLoadId)
+                            && string.Equals(lastLoadId, loadId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            LogDiagnostic("Marcador duplicado (misma carga) pid=" + pid + ", ignorando.");
+                            continue;
+                        }
+
+                        string lastModelBridge;
+                        DateTime lastTimeBridge;
+                        bool isDuplicate =
+                            _lastAlertedModelByPid.TryGetValue(pid, out lastModelBridge)
+                            && string.Equals(lastModelBridge, model, StringComparison.OrdinalIgnoreCase)
+                            && _lastAlertTimeByPid.TryGetValue(pid, out lastTimeBridge)
+                            && (DateTime.Now - lastTimeBridge).TotalSeconds < 3;
+
+                        _lastMarkerLoadIdByPid[pid] = loadId;
+
+                        if (isDuplicate)
+                        {
+                            LogDiagnostic("Marcador repetido en ventana corta pid=" + pid + " model=[" + model + "], ignorando.");
+                            continue;
+                        }
+
                         _alertedPids.Add(pid);
                         _lastAlertedModelByPid[pid] = model;
+                        _lastAlertTimeByPid[pid] = DateTime.Now;
+                        LogDiagnostic("Nueva carga detectada (marcador) pid=" + pid + " -> alerta.");
                         ShowReminder(pid, model);
                     }
                     catch (Exception ex)
@@ -537,6 +585,8 @@ namespace SaveAlertTS
                     _connected = false;
                     _alertedPids.Clear();
                     _lastAlertedModelByPid.Clear();
+                    _lastMarkerLoadIdByPid.Clear();
+                    _lastAlertTimeByPid.Clear();
 
                     }));
                 }
@@ -545,6 +595,8 @@ namespace SaveAlertTS
                     _connected = false;
                     _alertedPids.Clear();
                     _lastAlertedModelByPid.Clear();
+                    _lastMarkerLoadIdByPid.Clear();
+                    _lastAlertTimeByPid.Clear();
 
                 }
             }
@@ -709,3 +761,4 @@ namespace SaveAlertTS
         }
     }
 }
+

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -19,6 +20,16 @@ namespace SaveAlertTS
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            Localization.Initialize();
+            try
+            {
+                Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo(Localization.Language);
+            }
+            catch
+            {
+            }
+
             Application.Run(new TeklaWatcher());
 
             GC.KeepAlive(_mutex);

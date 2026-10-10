@@ -18,6 +18,28 @@ namespace SaveAlertTS
         public frmSaveAlert()
         {
             InitializeComponent();
+            ApplyLanguage();
+        }
+
+        private void ApplyLanguage()
+        {
+            Text = Localization.FormTitle;
+            lblMessage.Text = Localization.Message;
+            lblMessage2.Text = Localization.SubMessage;
+            btnOK.Text = Localization.OkSave;
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            CenterControls();
+        }
+
+        private void CenterControls()
+        {
+            lblMessage.Left = (ClientSize.Width - lblMessage.Width) / 2;
+            lblMessage2.Left = (ClientSize.Width - lblMessage2.Width) / 2;
+            btnOK.Left = (ClientSize.Width - btnOK.Width) / 2;
         }
 
         public void SetTarget(uint pid, string modelPath)
@@ -29,8 +51,9 @@ namespace SaveAlertTS
         private async void btnOK_Click(object sender, EventArgs e)
         {
             btnOK.Enabled = false;
-            btnOK.Text = "Saving...";
-            lblMessage2.Text = "Saving the model...";
+            btnOK.Text = Localization.Saving;
+            lblMessage2.Text = Localization.SavingModel;
+            CenterControls();
 
             bool saved = await Task.Run(() => TeklaSaveService.SaveCurrentModel(TargetPid, TargetModelPath));
 
@@ -41,9 +64,10 @@ namespace SaveAlertTS
             }
             else
             {
-                lblMessage.Text = "Error saving the model.";
+                lblMessage.Text = Localization.SaveError;
                 btnOK.Enabled = true;
-                btnOK.Text = "Retry";
+                btnOK.Text = Localization.Retry;
+                CenterControls();
             }
         }
     }
