@@ -8,12 +8,27 @@
 - **Respuesta temprana `MODE=dialog`**: el watcher distingue el inicio del cuadro del guardado confirmado y registra "Cuadro nativo iniciado (guardado manual pendiente)" en lugar de un "Guardado exitoso" prematuro.
 - **Deteccion de modelo compartido**: `SaveBridge` usa `ModelInfo.SharedModel` / `SingleUserModel` y escribe el marcador `SHARED=true|false`.
 
-### Fixed
+### Errores conocidos
 
-- **Alerta tardia al numerar/cancelar y abrir dibujos**: la rama suprimida de `ProcessModelState` limpia tambien `_pendingRealLoad` y `_lastUnloadingTicks`, evitando que una carga suprimida dispare el marcador al vencer la supresion.
-- **Carrera de `ModelSave` durante `RunMacro`**: el watchdog se arma despues de despachar el macro, para no confundir un `ModelSave` atrasado con la confirmacion del dialogo actual.
-- **Falsas alertas por vistas y dibujos**: el hueco `ModelUnloading -> ModelLoad` menor a 4000 ms se clasifica como espurio; supresiones de 5 s por `ModelSave`, 15 s por `Numbering`, 10 s por conversion y 12 s post-guardado.
-- **Cierre con X de la alerta**: el modelo cargado no vuelve a avisar.
+Problemas reportados antes de esta version, agrupados los que comparten causa. Todos quedan corregidos en esta version; se listan aqui como referencia.
+
+1. **Guardado y cambio de tipo de modelo**: la alerta volvia a aparecer despues de guardar en un modelo compartido y al pasar de multiusuario a usuario único.
+2. **Numeracion**: aparecia la alerta al numerar en multiusuario y, tras numerar/cancelar, salia una alerta tardia al abrir dibujos al vencer la supresion.
+3. **Vistas y dibujos**: los movimientos rapidos de vistas y el abrir/cerrar dibujos disparaban la alerta falsamente.
+4. **Cuadro de guardado**: el botón OK guardaba directo sin mostrar el cuadro nativo; el cuadro correcto debe llamarse **Model revision comment**.
+5. **Cierre con X de la alerta**: al descartarla con la X mientras cargaba o ya cargado, volvia a aparecer.
+6. **Cuadro nativo cancelado**: cerrar con X el cuadro **Model revision comment** no debia contarse como guardado.
+7. **Carrera en el despacho del macro**: un `ModelSave` atrasado podia confundirse con la confirmacion del cuadro recien abierto.
+
+### Correcciones
+
+- **Grupo 1 (guardado / cambio de tipo de modelo)**: `SaveBridge` detecta `ModelInfo.SharedModel` / `SingleUserModel` y escribe `SHARED=true|false`; supresion de 10 s en la transicion y de 12 s post-guardado en el watcher.
+- **Grupo 2 (numeracion)**: supresion de 15 s por `Numbering`; la rama suprimida de `ProcessModelState` limpia `_pendingRealLoad` y `_lastUnloadingTicks` para que no aparezca la alerta tardia al vencer la supresion.
+- **Grupo 3 (vistas y dibujos)**: el hueco `ModelUnloading -> ModelLoad` menor a 4000 ms se clasifica como espurio y se normaliza el titulo para no disparar por dibujos; supresiones de 5 s por `ModelSave`, 10 s por conversion y 12 s post-guardado.
+- **Grupo 4 (cuadro nativo)**: macro embebido desplegado en `XS_MACRO_DIRECTORY\modeling` e invocado con `Operation.RunMacro`; `IMacroRuntime.RunUI` + `akit.Callback("acmd_save_model", "", "main_frame")`. Cuadro: **Model revision comment**.
+- **Grupo 5 (X en la alerta)**: `DismissModel` marca el modelo cargado como descartado; no vuelve a avisar.
+- **Grupo 6 (X en el cuadro nativo)**: watchdog de 120 s; si no llega `ModelSave`, el resultado es `timeout_or_cancelled` y no se reporta guardado.
+- **Grupo 7 (carrera)**: el watchdog se arma despues de `Operation.RunMacro`, no antes.
 
 ### Changed
 
