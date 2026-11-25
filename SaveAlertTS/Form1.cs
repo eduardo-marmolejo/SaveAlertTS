@@ -14,6 +14,10 @@ namespace SaveAlertTS
     {
         public uint TargetPid { get; private set; }
         public string TargetModelPath { get; private set; }
+        // True = el bridge acepto el pedido. Con MODE=dialog el guardado real
+        // lo confirma el usuario en el cuadro "Model revision comment".
+        public bool SavedSuccessfully { get; private set; }
+        public string SaveResponseMode { get; private set; }
 
         public frmSaveAlert()
         {
@@ -59,6 +63,8 @@ namespace SaveAlertTS
 
             if (saved)
             {
+                SavedSuccessfully = true;
+                SaveResponseMode = TeklaSaveService.LastResponseMode;
                 btnOK.Enabled = true;
                 Close();
             }

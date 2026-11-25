@@ -2,6 +2,7 @@
 
 using System;
 using System.IO;
+using System.Text;
 using System.Threading;
 
 namespace Tekla.Technology.Akit.UserScript
@@ -11,6 +12,27 @@ namespace Tekla.Technology.Akit.UserScript
         private static int _started;
         private static bool _prevConnected;
         private static string _prevPath;
+        private static bool? _prevShared;
+        private static readonly object _markerGate = new object();
+        private static DateTime _suppressMarkerUntil = DateTime.MinValue;
+        private static DateTime _lastSuppressLog = DateTime.MinValue;
+        private const double RealUnloadGapMs = 4000;
+
+        // Opcion B: el bridge despliega el macro nativo en XS_MACRO_DIRECTORY
+        // y lo invoca con Operation.RunMacro. El cuadro se abre en el hilo de UI
+        // de Tekla mediante IMacroRuntime.RunUI + akit.Callback.
+        private const string NativeSaveMacroFileName = "SaveAlert_NativeSave.cs";
+        private const string NativeSaveMacroBase64 = "Ly8gTWFjcm8gZGVzcGxlZ2FkbyBhdXRvbWF0aWNhbWVudGUgcG9yIFNhdmVCcmlkZ2UuY3MgKG9wY2lvbiBCKS4KLy8gTm8gZWplY3V0YXIgbWFudWFsbWVudGU6IHNvbG8gYWN0dWEgc2kgZXhpc3RlIHNhdmVfZGlhbG9nX3JlcXVlc3RfPHBpZD4udHh0LgovLyBWZXJzaW9uIGVtYmViaWRhIGVuIFNhdmVCcmlkZ2UuY3MgY29tbyBiYXNlNjQ7IG1hbnRlbmVyIGFtYm9zIHNpbmNyb25pemFkb3MuCgojcHJhZ21hIHdhcm5pbmcgZGlzYWJsZSAxNjMzIC8vIFVucmVjb2duaXplZCAjcHJhZ21hIGRpcmVjdGl2ZQojcHJhZ21hIHJlZmVyZW5jZSAiVGVrbGEuTWFjcm9zLkFraXQiCiNwcmFnbWEgcmVmZXJlbmNlICJUZWtsYS5NYWNyb3MuUnVudGltZSIKI3ByYWdtYSB3YXJuaW5nIHJlc3RvcmUgMTYzMyAvLyBVbnJlY29nbml6ZWQgI3ByYWdtYSBkaXJlY3RpdmUKCnVzaW5nIFN5c3RlbTsKdXNpbmcgU3lzdGVtLklPOwp1c2luZyBTeXN0ZW0uVGhyZWFkaW5nOwp1c2luZyBUZWtsYS5NYWNyb3MuQWtpdDsKdXNpbmcgVGVrbGEuTWFjcm9zLlJ1bnRpbWU7CgpuYW1lc3BhY2UgVXNlck1hY3Jvcwp7CiAgICBwdWJsaWMgc2VhbGVkIGNsYXNzIFNhdmVBbGVydE5hdGl2ZVNhdmUKICAgIHsKICAgICAgICBbVGVrbGEuTWFjcm9zLlJ1bnRpbWUuTWFjcm9FbnRyeVBvaW50QXR0cmlidXRlKCldCiAgICAgICAgcHVibGljIHN0YXRpYyB2b2lkIFJ1bihJTWFjcm9SdW50aW1lIHJ1bnRpbWUpCiAgICAgICAgewogICAgICAgICAgICBpbnQgcGlkID0gU3lzdGVtLkRpYWdub3N0aWNzLlByb2Nlc3MuR2V0Q3VycmVudFByb2Nlc3MoKS5JZDsKICAgICAgICAgICAgc3RyaW5nIGRpciA9IFBhdGguQ29tYmluZSgKICAgICAgICAgICAgICAgIEVudmlyb25tZW50LkdldEZvbGRlclBhdGgoRW52aXJvbm1lbnQuU3BlY2lhbEZvbGRlci5Mb2NhbEFwcGxpY2F0aW9uRGF0YSksCiAgICAgICAgICAgICAgICAiU2F2ZUFsZXJ0VFMiLCAiYnJpZGdlIik7CiAgICAgICAgICAgIHN0cmluZyByZXF1ZXN0ID0gUGF0aC5Db21iaW5lKGRpciwgInNhdmVfZGlhbG9nX3JlcXVlc3RfIiArIHBpZCArICIudHh0Iik7CgogICAgICAgICAgICBMb2coIj09PSBTYXZlQWxlcnROYXRpdmVTYXZlID09PSBwaWQ9IiArIHBpZAogICAgICAgICAgICAgICAgKyAiIHRocmVhZD0iICsgVGhyZWFkLkN1cnJlbnRUaHJlYWQuTWFuYWdlZFRocmVhZElkCiAgICAgICAgICAgICAgICArICIgcG9vbD0iICsgVGhyZWFkLkN1cnJlbnRUaHJlYWQuSXNUaHJlYWRQb29sVGhyZWFkKTsKCiAgICAgICAgICAgIGlmICghRmlsZS5FeGlzdHMocmVxdWVzdCkpCiAgICAgICAgICAgIHsKICAgICAgICAgICAgICAgIExvZygiU2luIHBlZGlkbyBwZW5kaWVudGU7IHNhbGllbmRvIHNpbiBndWFyZGFyLiIpOwogICAgICAgICAgICAgICAgcmV0dXJuOwogICAgICAgICAgICB9CgogICAgICAgICAgICBUcnlEZWxldGUocmVxdWVzdCk7CgogICAgICAgICAgICB0cnkKICAgICAgICAgICAgewogICAgICAgICAgICAgICAgSUFraXRTY3JpcHRIb3N0IGFraXQgPSBydW50aW1lLkdldDxJQWtpdFNjcmlwdEhvc3Q+KCk7CiAgICAgICAgICAgICAgICBMb2coIkFraXQgaG9zdCBvYnRlbmlkby4gRGVzcGFjaGFuZG8gUnVuVUkuLi4iKTsKCiAgICAgICAgICAgICAgICBydW50aW1lLlJ1blVJKCgpID0+CiAgICAgICAgICAgICAgICB7CiAgICAgICAgICAgICAgICAgICAgTG9nKCJVSSB0aHJlYWQ9IiArIFRocmVhZC5DdXJyZW50VGhyZWFkLk1hbmFnZWRUaHJlYWRJZAogICAgICAgICAgICAgICAgICAgICAgICArICIgcG9vbD0iICsgVGhyZWFkLkN1cnJlbnRUaHJlYWQuSXNUaHJlYWRQb29sVGhyZWFkKTsKICAgICAgICAgICAgICAgICAgICBMb2coIkxsYW1hbmRvIGFraXQuQ2FsbGJhY2soXCJhY21kX3NhdmVfbW9kZWxcIiwgXCJcIiwgXCJtYWluX2ZyYW1lXCIpIik7CiAgICAgICAgICAgICAgICAgICAgYWtpdC5DYWxsYmFjaygiYWNtZF9zYXZlX21vZGVsIiwgIiIsICJtYWluX2ZyYW1lIik7CiAgICAgICAgICAgICAgICAgICAgTG9nKCJDb21hbmRvIGRlc3BhY2hhZG8uIik7CiAgICAgICAgICAgICAgICB9KTsKCiAgICAgICAgICAgICAgICBMb2coIlJ1blVJIGZpbmFsaXpvLiBGSU4uIik7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgY2F0Y2ggKEV4Y2VwdGlvbiBleCkKICAgICAgICAgICAgewogICAgICAgICAgICAgICAgTG9nKCJFUlJPUjogIiArIGV4LkdldFR5cGUoKS5OYW1lICsgIiAtICIgKyBleC5NZXNzYWdlKTsKICAgICAgICAgICAgICAgIGlmIChleC5Jbm5lckV4Y2VwdGlvbiAhPSBudWxsKQogICAgICAgICAgICAgICAgICAgIExvZygiICBJbm5lcjogIiArIGV4LklubmVyRXhjZXB0aW9uLkdldFR5cGUoKS5OYW1lICsgIiAtICIgKyBleC5Jbm5lckV4Y2VwdGlvbi5NZXNzYWdlKTsKICAgICAgICAgICAgfQogICAgICAgIH0KCiAgICAgICAgcHJpdmF0ZSBzdGF0aWMgdm9pZCBUcnlEZWxldGUoc3RyaW5nIHBhdGgpCiAgICAgICAgewogICAgICAgICAgICB0cnkKICAgICAgICAgICAgewogICAgICAgICAgICAgICAgaWYgKEZpbGUuRXhpc3RzKHBhdGgpKQogICAgICAgICAgICAgICAgICAgIEZpbGUuRGVsZXRlKHBhdGgpOwogICAgICAgICAgICB9CiAgICAgICAgICAgIGNhdGNoIChFeGNlcHRpb24pCiAgICAgICAgICAgIHsKICAgICAgICAgICAgfQogICAgICAgIH0KCiAgICAgICAgcHJpdmF0ZSBzdGF0aWMgdm9pZCBMb2coc3RyaW5nIG1lc3NhZ2UpCiAgICAgICAgewogICAgICAgICAgICB0cnkKICAgICAgICAgICAgewogICAgICAgICAgICAgICAgc3RyaW5nIGRpciA9IFBhdGguQ29tYmluZSgKICAgICAgICAgICAgICAgICAgICBFbnZpcm9ubWVudC5HZXRGb2xkZXJQYXRoKEVudmlyb25tZW50LlNwZWNpYWxGb2xkZXIuTG9jYWxBcHBsaWNhdGlvbkRhdGEpLAogICAgICAgICAgICAgICAgICAgICJTYXZlQWxlcnRUUyIsICJicmlkZ2UiKTsKICAgICAgICAgICAgICAgIERpcmVjdG9yeS5DcmVhdGVEaXJlY3RvcnkoZGlyKTsKICAgICAgICAgICAgICAgIHN0cmluZyBsaW5lID0gRGF0ZVRpbWUuTm93LlRvU3RyaW5nKCJ5eXl5LU1NLWRkIEhIOm1tOnNzLmZmZiIpCiAgICAgICAgICAgICAgICAgICAgKyAiIC0gIiArIG1lc3NhZ2UgKyBFbnZpcm9ubWVudC5OZXdMaW5lOwogICAgICAgICAgICAgICAgRmlsZS5BcHBlbmRBbGxUZXh0KFBhdGguQ29tYmluZShkaXIsICJuYXRpdmVfc2F2ZS5sb2ciKSwgbGluZSk7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgY2F0Y2ggKEV4Y2VwdGlvbikKICAgICAgICAgICAgewogICAgICAgICAgICB9CiAgICAgICAgfQogICAgfQp9Cg==";
+        private const int DialogTimeoutMs = 120000;
+        private static string _nativeMacroPath;
+        private static volatile bool _dialogPending;
+        private static long _dialogStartedTicks;
+
+        // Tekla dispara ModelUnloading tambien al guardar y numerar, siempre
+        // seguido de ModelLoad en ~2.4-2.9s. Solo un hueco >= 4s cuenta como
+        // cierre real de modelo; el hueco se mide en OnModelLoad.
+        private static long _lastUnloadingTicks;
+        private static volatile bool _pendingRealLoad;
         private static readonly System.Collections.Generic.List<Tekla.Structures.Model.Events> _heldBridgeEvents
             = new System.Collections.Generic.List<Tekla.Structures.Model.Events>();
 
@@ -35,6 +57,7 @@ namespace Tekla.Technology.Akit.UserScript
                 + " pool=" + Thread.CurrentThread.IsThreadPoolThread);
 
             RegisterModelLoadEvents(dir, pid);
+            DeployNativeSaveMacro(dir, pid);
 
             long ticks = 0;
             while (true)
@@ -42,6 +65,7 @@ namespace Tekla.Technology.Akit.UserScript
                 try
                 {
                     ProcessRequests(dir, pid);
+                    CheckDialogWatchdog(dir, pid);
                 }
                 catch (Exception ex)
                 {
@@ -65,9 +89,23 @@ namespace Tekla.Technology.Akit.UserScript
             {
                 var events = new Tekla.Structures.Model.Events();
                 events.ModelLoad += () => OnModelLoad(dir, pid);
+                events.ModelUnloading += () => OnModelUnloading(dir);
+                events.ModelUnloadingSync += () => OnModelUnloading(dir);
+
+                // Tekla dispara ModelLoad tambien al guardar y al numerar. Esos
+                // eventos no son una carga real de modelo y generaban marcadores
+                // falsos -> alertas repetidas. Los suprimimos brevemente.
+                events.ModelSave += () =>
+                {
+                    SuppressMarkers(dir, 5000, "ModelSave");
+                    NotifyDialogCompleted(dir);
+                };
+                events.ModelSaveAs += () => SuppressMarkers(dir, 5000, "ModelSaveAs");
+                events.Numbering += () => SuppressMarkers(dir, 15000, "Numbering");
+
                 events.Register();
                 _heldBridgeEvents.Add(events);
-                Log(dir, "Events ModelLoad registrados en el puente.");
+                Log(dir, "Events ModelLoad/Unloading/Save/Numbering registrados en el puente.");
             }
             catch (Exception ex)
             {
@@ -76,24 +114,122 @@ namespace Tekla.Technology.Akit.UserScript
             }
         }
 
+        private static void SuppressMarkers(string dir, int ms, string reason)
+        {
+            lock (_markerGate)
+            {
+                DateTime until = DateTime.Now.AddMilliseconds(ms);
+                if (until > _suppressMarkerUntil)
+                    _suppressMarkerUntil = until;
+            }
+            Log(dir, "Marcadores suprimidos " + ms + "ms (" + reason + ")");
+        }
+
+        private static bool MarkersSuppressed(string dir)
+        {
+            DateTime now = DateTime.Now;
+            bool suppressed;
+            bool logIt = false;
+            lock (_markerGate)
+            {
+                suppressed = now < _suppressMarkerUntil;
+                // Evita llenar el log en cada polling durante una suppression larga.
+                if (suppressed && (now - _lastSuppressLog).TotalMilliseconds > 1000)
+                {
+                    _lastSuppressLog = now;
+                    logIt = true;
+                }
+            }
+            if (logIt)
+                Log(dir, "Evento ignorado: marcadores suprimidos.");
+            return suppressed;
+        }
+
+        private static void OnModelUnloading(string dir)
+        {
+            Interlocked.Exchange(ref _lastUnloadingTicks, DateTime.Now.Ticks);
+            Log(dir, ">>> Evento ModelUnloading <<<");
+        }
+
         private static void OnModelLoad(string dir, int pid)
         {
             Log(dir, ">>> Evento ModelLoad disparado <<<");
+
+            long unloadTicks = Interlocked.Read(ref _lastUnloadingTicks);
+            if (unloadTicks != 0)
+            {
+                double gapMs = (DateTime.Now.Ticks - unloadTicks)
+                    / (double)TimeSpan.TicksPerMillisecond;
+                _pendingRealLoad = gapMs >= RealUnloadGapMs;
+                Log(dir, "Hueco ModelUnloading->ModelLoad = " + gapMs.ToString("F0")
+                    + "ms (" + (_pendingRealLoad ? "real" : "espurio") + ")");
+                if (!_pendingRealLoad)
+                    Interlocked.Exchange(ref _lastUnloadingTicks, 0L);
+            }
+            else
+            {
+                _pendingRealLoad = false;
+            }
+
             try
             {
                 var model = new Tekla.Structures.Model.Model();
                 if (model.GetConnectionStatus())
                 {
-                    string path = model.GetInfo().ModelPath;
-                    _prevConnected = true;
-                    _prevPath = path;
-                    WriteModelMarker(dir, pid, path);
+                    var info = model.GetInfo();
+                    ProcessModelState(dir, pid, true, info.ModelPath, IsShared(info));
                 }
             }
             catch (Exception ex)
             {
                 Log(dir, "Evento ModelLoad error: " + ex.GetType().Name + " - " + ex.Message);
             }
+        }
+
+        // Criterio de carga real: el polling observo una desconexion
+        // (_prevConnected==false), cambio la ruta/shared, o hubo un ciclo
+        // ModelUnloading->ModelLoad con hueco >= 4s (cierre real de modelo).
+        private static void ProcessModelState(string dir, int pid, bool connected, string path, bool shared)
+        {
+            if (!connected)
+            {
+                _prevConnected = false;
+                _prevPath = null;
+                _prevShared = null;
+                return;
+            }
+
+            bool isNew = !_prevConnected
+                || !string.Equals(_prevPath, path, StringComparison.OrdinalIgnoreCase)
+                || (_prevShared.HasValue && _prevShared.Value != shared)
+                || _pendingRealLoad;
+
+            if (!isNew)
+                return;
+
+            // Rechequeo justo antes de escribir: las llamadas a la API de Tekla
+            // tardan segundos y ModelSave/Numbering pueden llegar mientras tanto.
+            if (MarkersSuppressed(dir))
+            {
+                // Consumir el estado pendiente. Si no se actualiza, el siguiente
+                // polling volveria a considerar "nueva" esta misma carga al
+                // vencer la supresion y generaria la alerta tarde.
+                _prevConnected = true;
+                _prevPath = path;
+                _prevShared = shared;
+                // Sin esto, un ciclo real ModelUnloading->ModelLoad suprimido
+                // queda pendiente y dispara el marcador cuando expira la supresion.
+                _pendingRealLoad = false;
+                Interlocked.Exchange(ref _lastUnloadingTicks, 0L);
+                return;
+            }
+
+            _prevConnected = true;
+            _prevPath = path;
+            _prevShared = shared;
+            _pendingRealLoad = false;
+            Interlocked.Exchange(ref _lastUnloadingTicks, 0L);
+            WriteModelMarker(dir, pid, path, shared);
         }
 
         private static void ProcessRequests(string dir, int pid)
@@ -128,11 +264,10 @@ namespace Tekla.Technology.Akit.UserScript
 
                     bool ok = false;
                     string message = "unknown error";
+                    string mode = "direct";
                     try
                     {
-                        var handler = new Tekla.Structures.Model.ModelHandler();
-                        ok = handler.Save("SaveAlertTS", Environment.UserName);
-                        message = ok ? "saved" : "ModelHandler.Save() returned false";
+                        ok = SaveModelNative(dir, out mode, out message);
                     }
                     catch (Exception ex)
                     {
@@ -141,8 +276,8 @@ namespace Tekla.Technology.Akit.UserScript
                             message += " | Inner: " + ex.InnerException.Message;
                     }
 
-                    Log(dir, "Pedido " + requestId + " -> ok=" + ok + " [" + message + "]");
-                    WriteResponse(dir, requestId, ok, message);
+                    Log(dir, "Pedido " + requestId + " -> ok=" + ok + " mode=" + mode + " [" + message + "]");
+                    WriteResponse(dir, requestId, ok, message, mode);
                 }
                 catch (Exception ex)
                 {
@@ -155,6 +290,7 @@ namespace Tekla.Technology.Akit.UserScript
         {
             bool connected = false;
             string path = null;
+            bool shared = false;
 
             try
             {
@@ -164,6 +300,7 @@ namespace Tekla.Technology.Akit.UserScript
                 {
                     var info = model.GetInfo();
                     path = info.ModelPath;
+                    shared = IsShared(info);
                     if (string.IsNullOrEmpty(path))
                         connected = false;
                 }
@@ -175,26 +312,187 @@ namespace Tekla.Technology.Akit.UserScript
                 path = null;
             }
 
-            if (!connected)
-            {
-                _prevConnected = false;
-                _prevPath = null;
-                return;
-            }
-
-            bool isNew = !_prevConnected
-                || !string.Equals(_prevPath, path, StringComparison.OrdinalIgnoreCase);
-
-            _prevConnected = true;
-            _prevPath = path;
-
-            if (!isNew)
-                return;
-
-            WriteModelMarker(dir, pid, path);
+            ProcessModelState(dir, pid, connected, path, shared);
         }
 
-        private static void WriteModelMarker(string dir, int pid, string path)
+        private static bool IsShared(Tekla.Structures.Model.ModelInfo info)
+        {
+            try
+            {
+                if (info == null)
+                    return false;
+                return info.SharedModel || !info.SingleUserModel;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool SaveModelNative(string dir, out string mode, out string message)
+        {
+            mode = "direct";
+            message = "";
+            int pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+            string request = Path.Combine(dir, "save_dialog_request_" + pid + ".txt");
+
+            try
+            {
+                if (!DeployNativeSaveMacro(dir, pid))
+                    throw new InvalidOperationException("No se pudo desplegar el macro nativo");
+
+                TryDelete(request);
+                File.WriteAllText(request,
+                    "REQUESTEDAT=" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")
+                    + Environment.NewLine + "PID=" + pid + Environment.NewLine);
+
+                // Se desarma cualquier estado previo antes de despachar.
+                _dialogPending = false;
+                Interlocked.Exchange(ref _dialogStartedTicks, 0L);
+
+                Log(dir, "Solicitando cuadro nativo via Operation.RunMacro("
+                    + NativeSaveMacroFileName + ")...");
+                bool started = Tekla.Structures.Model.Operations.Operation.RunMacro(
+                    NativeSaveMacroFileName);
+                if (!started)
+                    throw new InvalidOperationException("Operation.RunMacro devolvio false");
+
+                // Armar el watchdog solo DESPUES de RunMacro. Un ModelSave atrasado
+                // del guardado anterior puede llegar mientras RunMacro ejecuta y no
+                // debe contarse como confirmacion de este dialogo.
+                Interlocked.Exchange(ref _dialogStartedTicks, DateTime.Now.Ticks);
+                _dialogPending = true;
+
+                mode = "dialog";
+                message = "dialog started";
+                Log(dir, "Cuadro nativo solicitado (mode=dialog). Esperando ModelSave.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _dialogPending = false;
+                Interlocked.Exchange(ref _dialogStartedTicks, 0L);
+                TryDelete(request);
+                Log(dir, "Fallo al iniciar cuadro nativo: " + ex.GetType().Name
+                    + " - " + ex.Message + ". Usando guardado directo de respaldo.");
+                return SaveModelDirect(dir, out mode, out message);
+            }
+        }
+
+        private static bool SaveModelDirect(string dir, out string mode, out string message)
+        {
+            mode = "direct";
+            message = "";
+            Log(dir, "Guardado directo de respaldo (ModelHandler.Save).");
+            SuppressMarkers(dir, 10000, "guardado");
+
+            var handler = new Tekla.Structures.Model.ModelHandler();
+            bool ok = handler.Save("SaveAlertTS", Environment.UserName);
+            message = ok ? "saved" : "ModelHandler.Save() returned false";
+            return ok;
+        }
+
+        private static bool DeployNativeSaveMacro(string dir, int pid)
+        {
+            try
+            {
+                TryDelete(Path.Combine(dir, "save_dialog_request_" + pid + ".txt"));
+
+                string macroRoot = "";
+                bool found = Tekla.Structures.TeklaStructuresSettings.GetAdvancedOption(
+                    "XS_MACRO_DIRECTORY", ref macroRoot);
+                if (!found || string.IsNullOrEmpty(macroRoot))
+                {
+                    Log(dir, "Deploy macro: XS_MACRO_DIRECTORY no disponible.");
+                    return false;
+                }
+
+                string first = macroRoot.Split(';')[0].Trim();
+                string targetDir = Path.Combine(first, "modeling");
+                Directory.CreateDirectory(targetDir);
+                string target = Path.Combine(targetDir, NativeSaveMacroFileName);
+
+                byte[] bytes = Convert.FromBase64String(NativeSaveMacroBase64);
+                string source = Encoding.UTF8.GetString(bytes);
+
+                if (File.Exists(target))
+                {
+                    string current = File.ReadAllText(target);
+                    if (string.Equals(current, source, StringComparison.Ordinal))
+                    {
+                        _nativeMacroPath = target;
+                        Log(dir, "Macro nativo ya actualizado: " + target);
+                        return true;
+                    }
+
+                    string backup = target + ".bak_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                    File.Copy(target, backup, true);
+                    Log(dir, "Backup de macro anterior: " + backup);
+                }
+
+                File.WriteAllText(target, source, new UTF8Encoding(false));
+                _nativeMacroPath = target;
+                Log(dir, "Macro nativo desplegado: " + target + " ("
+                    + bytes.Length + " bytes)");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log(dir, "Deploy macro error: " + ex.GetType().Name + " - " + ex.Message);
+                return false;
+            }
+        }
+
+        private static void NotifyDialogCompleted(string dir)
+        {
+            if (!_dialogPending)
+                return;
+
+            _dialogPending = false;
+            Interlocked.Exchange(ref _dialogStartedTicks, 0L);
+            Log(dir, "Cuadro nativo confirmado por ModelSave.");
+            WriteDialogResult(dir, "saved");
+        }
+
+        private static void CheckDialogWatchdog(string dir, int pid)
+        {
+            if (!_dialogPending)
+                return;
+
+            long started = Interlocked.Read(ref _dialogStartedTicks);
+            if (started == 0)
+                return;
+
+            double ms = (DateTime.Now.Ticks - started)
+                / (double)TimeSpan.TicksPerMillisecond;
+            if (ms < DialogTimeoutMs)
+                return;
+
+            _dialogPending = false;
+            Interlocked.Exchange(ref _dialogStartedTicks, 0L);
+            Log(dir, "Watchdog del cuadro nativo: sin ModelSave en "
+                + DialogTimeoutMs + "ms (cancelado o cerrado con X).");
+            WriteDialogResult(dir, "timeout_or_cancelled");
+        }
+
+        private static void WriteDialogResult(string dir, string result)
+        {
+            try
+            {
+                int pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                string path = Path.Combine(dir, "dialog_result_" + pid + ".txt");
+                File.WriteAllText(path,
+                    "PID=" + pid + Environment.NewLine +
+                    "RESULT=" + result + Environment.NewLine +
+                    "AT=" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + Environment.NewLine);
+            }
+            catch (Exception ex)
+            {
+                Log(dir, "Error escribiendo resultado del dialogo: " + ex.Message);
+            }
+        }
+
+        private static void WriteModelMarker(string dir, int pid, string path, bool shared)
         {
             try
             {
@@ -202,9 +500,10 @@ namespace Tekla.Technology.Akit.UserScript
                 string text =
                     "PID=" + pid + Environment.NewLine +
                     "MODEL=" + Sanitize(path) + Environment.NewLine +
+                    "SHARED=" + (shared ? "true" : "false") + Environment.NewLine +
                     "LOADEDAT=" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + Environment.NewLine;
                 File.WriteAllText(marker, text);
-                Log(dir, "Modelo detectado (nuevo): " + path);
+                Log(dir, "Modelo detectado (nuevo): " + path + " shared=" + shared);
             }
             catch (Exception ex)
             {
@@ -212,7 +511,7 @@ namespace Tekla.Technology.Akit.UserScript
             }
         }
 
-        private static void WriteResponse(string dir, string requestId, bool ok, string message)
+        private static void WriteResponse(string dir, string requestId, bool ok, string message, string mode)
         {
             try
             {
@@ -221,6 +520,7 @@ namespace Tekla.Technology.Akit.UserScript
                     "REQUESTID=" + requestId + Environment.NewLine +
                     "OK=" + (ok ? "true" : "false") + Environment.NewLine +
                     "MESSAGE=" + Sanitize(message) + Environment.NewLine +
+                    "MODE=" + (mode ?? "direct") + Environment.NewLine +
                     "FINISHEDAT=" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + Environment.NewLine;
 
                 File.WriteAllText(path, text);

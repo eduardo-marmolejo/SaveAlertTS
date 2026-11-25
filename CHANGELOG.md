@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.2.1] - 2026-11-24
+
+### Added
+
+- **Cuadro nativo "Model revision comment"**: al aceptar la alerta, `SaveBridge` despliega el macro `SaveAlert_NativeSave.cs` en `XS_MACRO_DIRECTORY\modeling` y lo ejecuta con `Operation.RunMacro`. El guardado real se confirma mediante `ModelSave`; si el cuadro se cancela o cierra, un watchdog de 120 s finaliza sin guardar.
+- **Respuesta temprana `MODE=dialog`**: el watcher distingue el inicio del cuadro del guardado confirmado y registra "Cuadro nativo iniciado (guardado manual pendiente)" en lugar de un "Guardado exitoso" prematuro.
+- **Deteccion de modelo compartido**: `SaveBridge` usa `ModelInfo.SharedModel` / `SingleUserModel` y escribe el marcador `SHARED=true|false`.
+
+### Fixed
+
+- **Alerta tardia al numerar/cancelar y abrir dibujos**: la rama suprimida de `ProcessModelState` limpia tambien `_pendingRealLoad` y `_lastUnloadingTicks`, evitando que una carga suprimida dispare el marcador al vencer la supresion.
+- **Carrera de `ModelSave` durante `RunMacro`**: el watchdog se arma despues de despachar el macro, para no confundir un `ModelSave` atrasado con la confirmacion del dialogo actual.
+- **Falsas alertas por vistas y dibujos**: el hueco `ModelUnloading -> ModelLoad` menor a 4000 ms se clasifica como espurio; supresiones de 5 s por `ModelSave`, 15 s por `Numbering`, 10 s por conversion y 12 s post-guardado.
+- **Cierre con X de la alerta**: el modelo cargado no vuelve a avisar.
+
+### Changed
+
+- Version del instalador y del ensamblado actualizada a 1.2.1.
+- `TeklaSaveService` expone `LastResponseMode` y registra el `MODE` de la respuesta del bridge.
+- `Form1` propaga `SaveResponseMode` al watcher y `TeklaWatcher.ModelSaved` ajusta el mensaje segun el modo.
+
 ## [1.2.0.0] - 2026-08-02
 
 ### Added

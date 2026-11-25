@@ -9,6 +9,10 @@ namespace SaveAlertTS
         private const int TimeoutMs = 180000;
         private const int PollMs = 200;
 
+        // MODE del bridge en la ultima respuesta ("" si no vino o fallo).
+        // "dialog" = el bridge abrio el cuadro nativo; el guardado real lo confirma el usuario.
+        public static string LastResponseMode { get; private set; }
+
         public static string BridgeDirectory
         {
             get
@@ -23,6 +27,7 @@ namespace SaveAlertTS
         {
             try
             {
+                LastResponseMode = "";
                 Directory.CreateDirectory(BridgeDirectory);
 
                 string requestId = Guid.NewGuid().ToString("N");
@@ -47,8 +52,10 @@ namespace SaveAlertTS
                         {
                             string[] lines = response.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
                             bool ok = string.Equals(GetValue(lines, "OK"), "true", StringComparison.OrdinalIgnoreCase);
+                            string mode = GetValue(lines, "MODE") ?? "";
                             string message = GetValue(lines, "MESSAGE");
-                            Log("Respuesta pid=" + pid + " ok=" + ok + " msg=[" + message + "]");
+                            LastResponseMode = mode;
+                            Log("Respuesta pid=" + pid + " ok=" + ok + " mode=[" + mode + "] msg=[" + message + "]");
                             CleanupFiles(reqPath, respPath);
                             return ok;
                         }

@@ -36,6 +36,22 @@ namespace SaveAlertTS
         private HashSet<uint> _teklaPids = new HashSet<uint>();
         private int _pidRefreshTick;
 
+        // Fase 1-4: anti-reaparicion y prioridad de marcadores del bridge.
+        private const int TitleDebounceMs = 700;
+        private const int DismissSuppressMs = 4000;
+        private const int ConversionSuppressMs = 10000;
+        private const int MarkerPriorityWindowMs = 1500;
+        private const int MissingTitleGraceMs = 6000;
+        private const int PostSaveSuppressMs = 12000;
+
+        private readonly Dictionary<uint, DateTime> _suppressAlertsUntil = new Dictionary<uint, DateTime>();
+        private readonly Dictionary<uint, DateTime> _postSaveSuppressUntil = new Dictionary<uint, DateTime>();
+        private readonly Dictionary<uint, DateTime> _missingTitleSince = new Dictionary<uint, DateTime>();
+        private readonly HashSet<string> _dismissedModels = new HashSet<string>();
+        private readonly Dictionary<uint, bool> _lastSharedStateByPid = new Dictionary<uint, bool>();
+        private DateTime _lastTitleChangeTime = DateTime.MinValue;
+        private DateTime _titleDetectionPausedUntil = DateTime.MinValue;
+
 
         public TeklaWatcher()
         {
@@ -147,30 +163,29 @@ namespace SaveAlertTS
 
         private string GetTeklaWindowTitle(uint processId)
         {
-            string bestTitle = "";
-            int bestLength = 0;
-
-            EnumWindows((hWnd, lParam) =>
+            // Solo la ventana principal: evita que los cambios de titulo de los
+            // dibujos (ventanas hijas/secundarias) disparen una alerta falsa.
+            try
             {
-                uint pid;
-                GetWindowThreadProcessId(hWnd, out pid);
-
-                if (pid != processId)
-                    return true;
-
-                int length = GetWindowTextLength(hWnd);
-                if (length > bestLength)
+                using (var proc = Process.GetProcessById((int)processId))
                 {
+                    IntPtr hWnd = proc.MainWindowHandle;
+                    if (hWnd == IntPtr.Zero)
+                        return "";
+
+                    int length = GetWindowTextLength(hWnd);
+                    if (length == 0)
+                        return "";
+
                     var sb = new StringBuilder(length + 1);
                     GetWindowText(hWnd, sb, sb.Capacity);
-                    bestTitle = sb.ToString();
-                    bestLength = length;
+                    return sb.ToString();
                 }
-
-                return true;
-            }, IntPtr.Zero);
-
-            return bestTitle;
+            }
+            catch (Exception)
+            {
+                return "";
+            }
         }
 
         private void OnTick()
@@ -192,6 +207,11 @@ namespace SaveAlertTS
                     _lastAlertedModelByPid.Clear();
                     _lastMarkerLoadIdByPid.Clear();
                     _lastAlertTimeByPid.Clear();
+                    _suppressAlertsUntil.Clear();
+                    _postSaveSuppressUntil.Clear();
+                    _missingTitleSince.Clear();
+                    _dismissedModels.Clear();
+                    _lastSharedStateByPid.Clear();
                     UninstallWinEventHook();
                     return;
                 }
@@ -259,11 +279,19 @@ namespace SaveAlertTS
                     _uiSync.Invoke(new Action(() =>
                     {
                         RegisterEvents();
+                        // La conexion exitosa tambien debe liberar el flag: si no,
+                        // tras un OnTeklaExit el OnTick queda en `if (_connecting) return;`.
+                        _connecting = false;
                         _connected = true;
                         _alertedPids.Clear();
                         _lastAlertedModelByPid.Clear();
                         _lastMarkerLoadIdByPid.Clear();
                         _lastAlertTimeByPid.Clear();
+                        _suppressAlertsUntil.Clear();
+                        _postSaveSuppressUntil.Clear();
+                        _missingTitleSince.Clear();
+                        _dismissedModels.Clear();
+                        _lastSharedStateByPid.Clear();
                         _loadingDetected = false;
                         InstallWinEventHook();
                         LogDiagnostic("Conexion establecida. Monitoreando ventana...");
@@ -326,6 +354,9 @@ namespace SaveAlertTS
             {
                 if (_teklaPids.Count == 0) return;
 
+                // Un marcador del bridge manda: no competir con el titulo.
+                if (DateTime.Now < _titleDetectionPausedUntil) return;
+
                 var current = new Dictionary<uint, string>();
 
                 foreach (uint pid in _teklaPids)
@@ -345,9 +376,34 @@ namespace SaveAlertTS
                     catch (Exception) { }
                 }
 
+                // El titulo de Tekla desaparece por fracciones de segundo al
+                // guardar, numerar o mover ventanas. No damos la sesion por
+                // cerrada hasta que el titulo falte de forma continua.
+                DateTime now = DateTime.Now;
+                foreach (uint pid in current.Keys)
+                {
+                    if (_missingTitleSince.ContainsKey(pid))
+                        _missingTitleSince.Remove(pid);
+                }
+
                 var gone = new List<uint>();
                 foreach (uint pid in _alertedPids)
-                    if (!current.ContainsKey(pid)) gone.Add(pid);
+                {
+                    if (current.ContainsKey(pid))
+                        continue;
+
+                    DateTime since;
+                    if (!_missingTitleSince.TryGetValue(pid, out since))
+                    {
+                        _missingTitleSince[pid] = now;
+                        continue;
+                    }
+                    if ((now - since).TotalMilliseconds < MissingTitleGraceMs)
+                        continue;
+
+                    gone.Add(pid);
+                }
+
                 foreach (uint pid in gone)
                 {
                     LogDiagnostic("Sesion sin modelo o cerrada pid=" + pid);
@@ -355,6 +411,9 @@ namespace SaveAlertTS
                     _lastAlertedModelByPid.Remove(pid);
                     _lastMarkerLoadIdByPid.Remove(pid);
                     _lastAlertTimeByPid.Remove(pid);
+                    _suppressAlertsUntil.Remove(pid);
+                    _lastSharedStateByPid.Remove(pid);
+                    _missingTitleSince.Remove(pid);
                 }
 
                 bool anyNew = false;
@@ -382,6 +441,11 @@ namespace SaveAlertTS
                 if (anyNew)
                 {
                     LogDiagnostic("Sesiones actuales: [" + string.Join(" | ", current.Select(kv => kv.Key + "=" + kv.Value)) + "]");
+                    if (IsDismissed(targetPid, targetModel) || IsSuppressed(targetPid))
+                    {
+                        LogDiagnostic("Alerta por titulo ignorada (dismiss/suppress) pid=" + targetPid);
+                        return;
+                    }
                     ShowReminder(targetPid, targetModel);
                 }
             }
@@ -420,7 +484,25 @@ namespace SaveAlertTS
 
             afterDash = afterDash.Replace("(Loading)", "").Trim().TrimEnd(' ');
 
+            if (!LooksLikeModelPath(afterDash))
+                return "";
+
             return afterDash;
+        }
+
+        private static bool LooksLikeModelPath(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length < 3)
+                return false;
+
+            // Las rutas de modelo de Tekla siempre son absolutas (unidad o UNC).
+            // Esto descarta titulos de dibujo y ventanas secundarias sin ruta.
+            if (value.IndexOf(':') > 0)
+                return true;
+            if (value.StartsWith("\\\\", StringComparison.Ordinal))
+                return true;
+
+            return false;
         }
 
         private void ProcessBridgeMarkers()
@@ -486,6 +568,24 @@ namespace SaveAlertTS
 
                         LogDiagnostic("Marcador de modelo pid=" + pid + " model=[" + model + "] loadId=[" + loadId + "]");
 
+                        // Fase 4: transicion multiusuario -> usuario unico. Suprime la
+                        // alerta mientras Tekla termina la conversion.
+                        string sharedText = GetBridgeValue(lines, "SHARED");
+                        bool shared;
+                        bool prevShared;
+                        if (bool.TryParse(sharedText, out shared)
+                            && _lastSharedStateByPid.TryGetValue(pid, out prevShared)
+                            && prevShared && !shared)
+                        {
+                            _suppressAlertsUntil[pid] = DateTime.Now.AddMilliseconds(ConversionSuppressMs);
+                            LogDiagnostic("Transicion multiusuario -> usuario unico pid=" + pid
+                                + ", suprimiendo alerta " + ConversionSuppressMs + "ms.");
+                            _lastSharedStateByPid[pid] = shared;
+                            continue;
+                        }
+                        if (bool.TryParse(sharedText, out shared))
+                            _lastSharedStateByPid[pid] = shared;
+
                         string lastLoadId;
                         if (_lastMarkerLoadIdByPid.TryGetValue(pid, out lastLoadId)
                             && string.Equals(lastLoadId, loadId, StringComparison.OrdinalIgnoreCase))
@@ -510,9 +610,25 @@ namespace SaveAlertTS
                             continue;
                         }
 
+                        // Un marcador nuevo (otra carga real del modelo) reinicia el
+                        // dismiss. Guardar o cerrar dibujos no generan marcador nuevo,
+                        // por lo que no lo reinician.
+                        _dismissedModels.Remove(ModelKey(pid, model));
+
+                        if (IsSuppressed(pid))
+                        {
+                            LogDiagnostic("Alerta ignorada (suppress) pid=" + pid + " model=[" + model + "]");
+                            continue;
+                        }
+
                         _alertedPids.Add(pid);
                         _lastAlertedModelByPid[pid] = model;
                         _lastAlertTimeByPid[pid] = DateTime.Now;
+
+                        // El marcador del bridge es la fuente determinista: pausamos la
+                        // deteccion por titulo para que no dispare una segunda alerta.
+                        _titleDetectionPausedUntil = DateTime.Now.AddMilliseconds(MarkerPriorityWindowMs);
+
                         LogDiagnostic("Nueva carga detectada (marcador) pid=" + pid + " -> alerta.");
                         ShowReminder(pid, model);
                     }
@@ -578,31 +694,91 @@ namespace SaveAlertTS
 
             try
             {
+                Action reset = () =>
+                {
+                    _connected = false;
+                    // Sin estos reseteos el OnTick queda atrapado en
+                    // `if (_connecting) return;` y nunca se reconecta al
+                    // siguiente proceso de Tekla que se abra.
+                    _connecting = false;
+                    _modelConnectionAttempted = false;
+                    _eventsRegistered = false;
+                    _alertedPids.Clear();
+                    _lastAlertedModelByPid.Clear();
+                    _lastMarkerLoadIdByPid.Clear();
+                    _lastAlertTimeByPid.Clear();
+                    _suppressAlertsUntil.Clear();
+                    _postSaveSuppressUntil.Clear();
+                    _missingTitleSince.Clear();
+                    _dismissedModels.Clear();
+                    _lastSharedStateByPid.Clear();
+                    UninstallWinEventHook();
+                };
+
                 if (_uiSync.InvokeRequired)
-                {
-                    _uiSync.Invoke(new Action(() =>
-                    {
-                    _connected = false;
-                    _alertedPids.Clear();
-                    _lastAlertedModelByPid.Clear();
-                    _lastMarkerLoadIdByPid.Clear();
-                    _lastAlertTimeByPid.Clear();
-
-                    }));
-                }
+                    _uiSync.Invoke(reset);
                 else
-                {
-                    _connected = false;
-                    _alertedPids.Clear();
-                    _lastAlertedModelByPid.Clear();
-                    _lastMarkerLoadIdByPid.Clear();
-                    _lastAlertTimeByPid.Clear();
-
-                }
+                    reset();
             }
             catch (Exception ex)
             {
                 LogDiagnostic("OnTeklaExit error: " + ex.Message);
+            }
+        }
+
+        private static string ModelKey(uint pid, string model)
+        {
+            return pid + "|" + (model ?? "").Trim().ToLowerInvariant();
+        }
+
+        private bool IsSuppressed(uint pid)
+        {
+            DateTime until;
+            if (_suppressAlertsUntil.TryGetValue(pid, out until) && DateTime.Now < until)
+                return true;
+            if (_postSaveSuppressUntil.TryGetValue(pid, out until) && DateTime.Now < until)
+                return true;
+            return false;
+        }
+
+        private bool IsDismissed(uint pid, string model)
+        {
+            return _dismissedModels.Contains(ModelKey(pid, model));
+        }
+
+        // Llamado desde el FormClosed cuando el bridge acepto el pedido de guardado.
+        // Con MODE=dialog el guardado real lo confirma el usuario en el cuadro nativo;
+        // aqui solo se arma la supresion para evitar alertas tardias.
+        public void ModelSaved(uint pid, string model, string saveMode = null)
+        {
+            try
+            {
+                _postSaveSuppressUntil[pid] = DateTime.Now.AddMilliseconds(PostSaveSuppressMs);
+                if (string.Equals(saveMode, "dialog", StringComparison.OrdinalIgnoreCase))
+                    LogDiagnostic("Cuadro nativo iniciado (guardado manual pendiente) pid=" + pid + " model=[" + model
+                        + "], suprimiendo alertas " + PostSaveSuppressMs + "ms.");
+                else
+                    LogDiagnostic("Guardado exitoso pid=" + pid + " model=[" + model
+                        + "], suprimiendo alertas " + PostSaveSuppressMs + "ms.");
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostic("ModelSaved error: " + ex.Message);
+            }
+        }
+
+        // Llamado desde el FormClosed de la alerta cuando el usuario la cierra con la X.
+        public void DismissModel(uint pid, string model)
+        {
+            try
+            {
+                _dismissedModels.Add(ModelKey(pid, model));
+                _suppressAlertsUntil[pid] = DateTime.Now.AddMilliseconds(DismissSuppressMs);
+                LogDiagnostic("Alerta descartada con X pid=" + pid + " model=[" + model + "]");
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostic("DismissModel error: " + ex.Message);
             }
         }
 
@@ -612,6 +788,12 @@ namespace SaveAlertTS
 
             try
             {
+                if (IsDismissed(pid, model) || IsSuppressed(pid))
+                {
+                    LogDiagnostic("ShowReminder omitido (dismiss/suppress) pid=" + pid);
+                    return;
+                }
+
                 if (_activeAlert != null && !_activeAlert.IsDisposed)
                 {
                     _activeAlert.SetTarget(pid, model);
@@ -626,7 +808,19 @@ namespace SaveAlertTS
                 _activeAlert.StartPosition = FormStartPosition.CenterScreen;
                 _activeAlert.TopMost = true;
                 _activeAlert.ShowInTaskbar = true;
-                _activeAlert.FormClosed += (s, e) => _activeAlert = null;
+                _activeAlert.FormClosed += (s, e) =>
+                {
+                    var form = s as frmSaveAlert;
+                    if (form != null)
+                    {
+                        if (form.SavedSuccessfully)
+                            ModelSaved(form.TargetPid, form.TargetModelPath, form.SaveResponseMode);
+                        else
+                            // Cierre con la X: no volver a mostrar para este modelo cargado.
+                            DismissModel(form.TargetPid, form.TargetModelPath);
+                    }
+                    _activeAlert = null;
+                };
                 _activeAlert.Show();
                 _activeAlert.BringToFront();
 
@@ -715,16 +909,39 @@ namespace SaveAlertTS
                 GetWindowText(hwnd, sb, sb.Capacity);
                 string title = sb.ToString();
 
-                if (title.Length > 0 && title.IndexOf("Tekla", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (title.Length == 0 || title.IndexOf("Tekla", StringComparison.OrdinalIgnoreCase) < 0)
+                    return;
+
+                // Ignorar ventanas secundarias (dibujos, cuadros sin titulo).
+                uint evtPid;
+                GetWindowThreadProcessId(hwnd, out evtPid);
+                if (!_teklaPids.Contains(evtPid))
+                    return;
+
+                try
                 {
-                    _pendingWinEventHwnd = hwnd;
-                    _titleChanged = true;
-                    if (title.IndexOf("(Loading)", StringComparison.OrdinalIgnoreCase) >= 0)
+                    using (var proc = Process.GetProcessById((int)evtPid))
                     {
-                        _pendingWinEventHwnd = hwnd;
-                        _loadingDetected = true;
+                        if (proc.MainWindowHandle != hwnd)
+                            return;
                     }
                 }
+                catch (Exception) { return; }
+
+                bool loading = title.IndexOf("(Loading)", StringComparison.OrdinalIgnoreCase) >= 0;
+                DateTime now = DateTime.Now;
+
+                // Los movimientos rapidos de vistas cambian el titulo varias veces
+                // por segundo: aplicamos debounce salvo durante la carga del modelo.
+                if (!loading && (now - _lastTitleChangeTime).TotalMilliseconds < TitleDebounceMs)
+                    return;
+
+                _lastTitleChangeTime = now;
+                _pendingWinEventHwnd = hwnd;
+                _titleChanged = true;
+
+                if (loading)
+                    _loadingDetected = true;
             }
             catch (Exception) { }
         }
